@@ -11,7 +11,7 @@ import (
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
-	"github.com/nbd-wtf/go-nostr/sdk"
+	"github.com/nbd-wtf/nostr-sdk"
 )
 
 func doProfile(cCtx *cli.Context) error {
@@ -19,7 +19,7 @@ func doProfile(cCtx *cli.Context) error {
 	j := cCtx.Bool("json")
 
 	cfg := cCtx.App.Metadata["config"].(*Config)
-	relay := cfg.FindRelay(Relay{Read: true})
+	relay := cfg.FindRelay(context.Background(), Relay{Read: true})
 	if relay == nil {
 		return errors.New("cannot connect relays")
 	}
@@ -27,24 +27,24 @@ func doProfile(cCtx *cli.Context) error {
 
 	var pub string
 	if user == "" {
-		if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-			return err
-		} else {
+		if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 			if pub, err = nostr.GetPublicKey(s.(string)); err != nil {
 				return err
 			}
+		} else {
+			return err
 		}
 	} else {
-		if pp := sdk.InputToProfile(context.TODO(), user); pp == nil {
-			return fmt.Errorf("failed to parse pubkey from '%s'", user)
-		} else {
+		if pp := sdk.InputToProfile(context.TODO(), user); pp != nil {
 			pub = pp.PublicKey
+		} else {
+			return fmt.Errorf("failed to parse pubkey from '%s'", user)
 		}
 	}
 
 	// get set-metadata
 	filter := nostr.Filter{
-		Kinds:   []int{nostr.KindSetMetadata},
+		Kinds:   []int{nostr.KindProfileMetadata},
 		Authors: []string{pub},
 		Limit:   1,
 	}
@@ -53,14 +53,15 @@ func doProfile(cCtx *cli.Context) error {
 	if len(evs) == 0 {
 		return errors.New("cannot find user")
 	}
+
+	if j {
+		fmt.Fprintln(os.Stdout, evs[0].Content)
+		return nil
+	}
 	var profile Profile
 	err := json.Unmarshal([]byte(evs[0].Content), &profile)
 	if err != nil {
 		return err
-	}
-	if j {
-		json.NewEncoder(os.Stdout).Encode(profile)
-		return nil
 	}
 	npub, err := nip19.EncodePublicKey(pub)
 	if err != nil {

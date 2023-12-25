@@ -18,7 +18,7 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip04"
 	"github.com/nbd-wtf/go-nostr/nip19"
-	"github.com/nbd-wtf/go-nostr/sdk"
+	"github.com/nbd-wtf/nostr-sdk"
 )
 
 func doDMList(cCtx *cli.Context) error {
@@ -34,10 +34,10 @@ func doDMList(cCtx *cli.Context) error {
 
 	var sk string
 	var npub string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	if npub, err = nostr.GetPublicKey(sk); err != nil {
 		return err
@@ -104,10 +104,10 @@ func doDMTimeline(cCtx *cli.Context) error {
 	var sk string
 	var npub string
 	var err error
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	if npub, err = nostr.GetPublicKey(sk); err != nil {
 		return err
@@ -117,10 +117,10 @@ func doDMTimeline(cCtx *cli.Context) error {
 		u = npub
 	}
 	var pub string
-	if pp := sdk.InputToProfile(context.TODO(), u); pp == nil {
-		return fmt.Errorf("failed to parse pubkey from '%s'", u)
-	} else {
+	if pp := sdk.InputToProfile(context.TODO(), u); pp != nil {
 		pub = pp.PublicKey
+	} else {
+		return fmt.Errorf("failed to parse pubkey from '%s'", u)
 	}
 	// get followers
 	followsMap, err := cfg.GetFollows(cCtx.String("a"))
@@ -152,10 +152,10 @@ func doDMPost(cCtx *cli.Context) error {
 	cfg := cCtx.App.Metadata["config"].(*Config)
 
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	ev := nostr.Event{}
 	if npub, err := nostr.GetPublicKey(sk); err == nil {
@@ -188,10 +188,10 @@ func doDMPost(cCtx *cli.Context) error {
 		u = ev.PubKey
 	}
 	var pub string
-	if pp := sdk.InputToProfile(context.TODO(), u); pp == nil {
-		return fmt.Errorf("failed to parse pubkey from '%s'", u)
-	} else {
+	if pp := sdk.InputToProfile(context.TODO(), u); pp != nil {
 		pub = pp.PublicKey
+	} else {
+		return fmt.Errorf("failed to parse pubkey from '%s'", u)
 	}
 
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"p", pub})
@@ -211,14 +211,15 @@ func doDMPost(cCtx *cli.Context) error {
 	}
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
-		status, err := relay.Publish(context.Background(), ev)
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot post")
@@ -232,14 +233,15 @@ func doPost(cCtx *cli.Context) error {
 		return cli.ShowSubcommandHelp(cCtx)
 	}
 	sensitive := cCtx.String("sensitive")
+	geohash := cCtx.String("geohash")
 
 	cfg := cCtx.App.Metadata["config"].(*Config)
 
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	ev := nostr.Event{}
 	if pub, err := nostr.GetPublicKey(sk); err == nil {
@@ -286,16 +288,20 @@ func doPost(cCtx *cli.Context) error {
 
 	for i, u := range cCtx.StringSlice("u") {
 		ev.Content = fmt.Sprintf("#[%d] ", i) + ev.Content
-		if pp := sdk.InputToProfile(context.TODO(), u); pp == nil {
-			return fmt.Errorf("failed to parse pubkey from '%s'", u)
-		} else {
+		if pp := sdk.InputToProfile(context.TODO(), u); pp != nil {
 			u = pp.PublicKey
+		} else {
+			return fmt.Errorf("failed to parse pubkey from '%s'", u)
 		}
 		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"p", u})
 	}
 
 	if sensitive != "" {
 		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"content-warning", sensitive})
+	}
+
+	if geohash != "" {
+		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"g", geohash})
 	}
 
 	hashtag := nostr.Tag{"h"}
@@ -313,14 +319,15 @@ func doPost(cCtx *cli.Context) error {
 	}
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
-		status, err := relay.Publish(context.Background(), ev)
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot post")
@@ -336,14 +343,15 @@ func doReply(cCtx *cli.Context) error {
 		return cli.ShowSubcommandHelp(cCtx)
 	}
 	sensitive := cCtx.String("sensitive")
+	geohash := cCtx.String("geohash")
 
 	cfg := cCtx.App.Metadata["config"].(*Config)
 
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	ev := nostr.Event{}
 	if pub, err := nostr.GetPublicKey(sk); err == nil {
@@ -355,10 +363,10 @@ func doReply(cCtx *cli.Context) error {
 		return err
 	}
 
-	if evp := sdk.InputToEventPointer(id); evp == nil {
-		return fmt.Errorf("failed to parse event from '%s'", id)
-	} else {
+	if evp := sdk.InputToEventPointer(id); evp != nil {
 		id = evp.ID
+	} else {
+		return fmt.Errorf("failed to parse event from '%s'", id)
 	}
 
 	ev.CreatedAt = nostr.Now()
@@ -400,6 +408,10 @@ func doReply(cCtx *cli.Context) error {
 		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"content-warning", sensitive})
 	}
 
+	if geohash != "" {
+		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"g", geohash})
+	}
+
 	hashtag := nostr.Tag{"h"}
 	for _, m := range regexp.MustCompile(`#[a-zA-Z0-9]+`).FindAllStringSubmatchIndex(ev.Content, -1) {
 		hashtag = append(hashtag, ev.Content[m[0]+1:m[1]])
@@ -409,22 +421,23 @@ func doReply(cCtx *cli.Context) error {
 	}
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
 		if !quote {
 			ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"e", id, relay.URL, "reply"})
 		} else {
 			ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"e", id, relay.URL, "mention"})
 		}
 		if err := ev.Sign(sk); err != nil {
-			return
+			return true
 		}
-		status, err := relay.Publish(context.Background(), ev)
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot reply")
@@ -439,10 +452,10 @@ func doRepost(cCtx *cli.Context) error {
 
 	ev := nostr.Event{}
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	if pub, err := nostr.GetPublicKey(sk); err == nil {
 		if _, err := nip19.EncodePublicKey(pub); err != nil {
@@ -453,10 +466,10 @@ func doRepost(cCtx *cli.Context) error {
 		return err
 	}
 
-	if evp := sdk.InputToEventPointer(id); evp == nil {
-		return fmt.Errorf("failed to parse event from '%s'", id)
-	} else {
+	if evp := sdk.InputToEventPointer(id); evp != nil {
 		id = evp.ID
+	} else {
+		return fmt.Errorf("failed to parse event from '%s'", id)
 	}
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"e", id})
 	filter := nostr.Filter{
@@ -472,27 +485,28 @@ func doRepost(cCtx *cli.Context) error {
 	first.Store(true)
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
 		if first.Load() {
-			evs, err := relay.QuerySync(context.Background(), filter)
+			evs, err := relay.QuerySync(ctx, filter)
 			if err != nil {
-				return
+				return true
 			}
 			for _, tmp := range evs {
 				ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"p", tmp.ID})
 			}
 			first.Store(false)
 			if err := ev.Sign(sk); err != nil {
-				return
+				return true
 			}
 		}
-		status, err := relay.Publish(context.Background(), ev)
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot repost")
@@ -502,19 +516,19 @@ func doRepost(cCtx *cli.Context) error {
 
 func doUnrepost(cCtx *cli.Context) error {
 	id := cCtx.String("id")
-	if evp := sdk.InputToEventPointer(id); evp == nil {
-		return fmt.Errorf("failed to parse event from '%s'", id)
-	} else {
+	if evp := sdk.InputToEventPointer(id); evp != nil {
 		id = evp.ID
+	} else {
+		return fmt.Errorf("failed to parse event from '%s'", id)
 	}
 
 	cfg := cCtx.App.Metadata["config"].(*Config)
 
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	pub, err := nostr.GetPublicKey(sk)
 	if err != nil {
@@ -527,16 +541,17 @@ func doUnrepost(cCtx *cli.Context) error {
 	}
 	var repostID string
 	var mu sync.Mutex
-	cfg.Do(Relay{Read: true}, func(relay *nostr.Relay) {
-		evs, err := relay.QuerySync(context.Background(), filter)
+	cfg.Do(Relay{Read: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		evs, err := relay.QuerySync(ctx, filter)
 		if err != nil {
-			return
+			return true
 		}
 		mu.Lock()
 		if len(evs) > 0 && repostID == "" {
 			repostID = evs[0].ID
 		}
 		mu.Unlock()
+		return true
 	})
 
 	var ev nostr.Event
@@ -548,14 +563,15 @@ func doUnrepost(cCtx *cli.Context) error {
 	}
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
-		status, err := relay.Publish(context.Background(), ev)
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot unrepost")
@@ -570,10 +586,10 @@ func doLike(cCtx *cli.Context) error {
 
 	ev := nostr.Event{}
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	if pub, err := nostr.GetPublicKey(sk); err == nil {
 		if _, err := nip19.EncodePublicKey(pub); err != nil {
@@ -584,10 +600,10 @@ func doLike(cCtx *cli.Context) error {
 		return err
 	}
 
-	if evp := sdk.InputToEventPointer(id); evp == nil {
-		return fmt.Errorf("failed to parse event from '%s'", id)
-	} else {
+	if evp := sdk.InputToEventPointer(id); evp != nil {
 		id = evp.ID
+	} else {
+		return fmt.Errorf("failed to parse event from '%s'", id)
 	}
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"e", id})
 	filter := nostr.Filter{
@@ -614,27 +630,29 @@ func doLike(cCtx *cli.Context) error {
 	first.Store(true)
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
 		if first.Load() {
-			evs, err := relay.QuerySync(context.Background(), filter)
+			evs, err := relay.QuerySync(ctx, filter)
 			if err != nil {
-				return
+				return true
 			}
 			for _, tmp := range evs {
 				ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"p", tmp.ID})
 			}
 			first.Store(false)
 			if err := ev.Sign(sk); err != nil {
-				return
+				return true
 			}
+			return true
 		}
-		status, err := relay.Publish(context.Background(), ev)
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot like")
@@ -644,19 +662,19 @@ func doLike(cCtx *cli.Context) error {
 
 func doUnlike(cCtx *cli.Context) error {
 	id := cCtx.String("id")
-	if evp := sdk.InputToEventPointer(id); evp == nil {
-		return fmt.Errorf("failed to parse event from '%s'", id)
-	} else {
+	if evp := sdk.InputToEventPointer(id); evp != nil {
 		id = evp.ID
+	} else {
+		return fmt.Errorf("failed to parse event from '%s'", id)
 	}
 
 	cfg := cCtx.App.Metadata["config"].(*Config)
 
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	pub, err := nostr.GetPublicKey(sk)
 	if err != nil {
@@ -669,16 +687,17 @@ func doUnlike(cCtx *cli.Context) error {
 	}
 	var likeID string
 	var mu sync.Mutex
-	cfg.Do(Relay{Read: true}, func(relay *nostr.Relay) {
-		evs, err := relay.QuerySync(context.Background(), filter)
+	cfg.Do(Relay{Read: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		evs, err := relay.QuerySync(ctx, filter)
 		if err != nil {
-			return
+			return true
 		}
 		mu.Lock()
 		if len(evs) > 0 && likeID == "" {
 			likeID = evs[0].ID
 		}
 		mu.Unlock()
+		return true
 	})
 
 	var ev nostr.Event
@@ -690,14 +709,15 @@ func doUnlike(cCtx *cli.Context) error {
 	}
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
-		status, err := relay.Publish(context.Background(), ev)
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot unlike")
@@ -712,10 +732,10 @@ func doDelete(cCtx *cli.Context) error {
 
 	ev := nostr.Event{}
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	if pub, err := nostr.GetPublicKey(sk); err == nil {
 		if _, err := nip19.EncodePublicKey(pub); err != nil {
@@ -726,10 +746,10 @@ func doDelete(cCtx *cli.Context) error {
 		return err
 	}
 
-	if evp := sdk.InputToEventPointer(id); evp == nil {
-		return fmt.Errorf("failed to parse event from '%s'", id)
-	} else {
+	if evp := sdk.InputToEventPointer(id); evp != nil {
 		id = evp.ID
+	} else {
+		return fmt.Errorf("failed to parse event from '%s'", id)
 	}
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"e", id})
 	ev.CreatedAt = nostr.Now()
@@ -739,14 +759,15 @@ func doDelete(cCtx *cli.Context) error {
 	}
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
-		status, err := relay.Publish(context.Background(), ev)
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot delete")
@@ -803,17 +824,17 @@ func doStream(cCtx *cli.Context) error {
 
 	cfg := cCtx.App.Metadata["config"].(*Config)
 
-	relay := cfg.FindRelay(Relay{Read: true})
+	relay := cfg.FindRelay(context.Background(), Relay{Read: true})
 	if relay == nil {
 		return errors.New("cannot connect relays")
 	}
 	defer relay.Close()
 
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	pub, err := nostr.GetPublicKey(sk)
 	if err != nil {
@@ -861,8 +882,9 @@ func doStream(cCtx *cli.Context) error {
 				if err := evr.Sign(sk); err != nil {
 					return err
 				}
-				cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
-					relay.Publish(context.Background(), evr)
+				cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+					relay.Publish(ctx, evr)
+					return true
 				})
 			}
 		} else {
@@ -905,10 +927,10 @@ func postMsg(cCtx *cli.Context, msg string) error {
 	cfg := cCtx.App.Metadata["config"].(*Config)
 
 	var sk string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
+	} else {
+		return err
 	}
 	ev := nostr.Event{}
 	if pub, err := nostr.GetPublicKey(sk); err == nil {
@@ -929,14 +951,15 @@ func postMsg(cCtx *cli.Context, msg string) error {
 	}
 
 	var success atomic.Int64
-	cfg.Do(Relay{Write: true}, func(relay *nostr.Relay) {
-		status, err := relay.Publish(context.Background(), ev)
+	cfg.Do(Relay{Write: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		status, err := relay.Publish(ctx, ev)
 		if cfg.verbose {
 			fmt.Fprintln(os.Stderr, relay.URL, status, err)
 		}
 		if err == nil && status != nostr.PublishStatusFailed {
 			success.Add(1)
 		}
+		return true
 	})
 	if success.Load() == 0 {
 		return errors.New("cannot post")

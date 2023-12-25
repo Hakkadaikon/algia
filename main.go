@@ -24,32 +24,38 @@ import (
 
 const name = "algia"
 
-const version = "0.0.45"
+const version = "0.0.53"
 
 var revision = "HEAD"
 
+// Relay is
 type Relay struct {
 	Read   bool `json:"read"`
 	Write  bool `json:"write"`
 	Search bool `json:"search"`
 }
 
+// Config is
 type Config struct {
 	Relays     map[string]Relay   `json:"relays"`
 	Follows    map[string]Profile `json:"follows"`
 	PrivateKey string             `json:"privatekey"`
 	Updated    time.Time          `json:"updated"`
 	Emojis     map[string]string  `json:"emojis"`
+	NwcURI     string             `json:"nwc-uri"`
+	NwcPub     string             `json:"nwc-pub"`
 	verbose    bool
 	tempRelay  bool
 	sk         string
 }
 
+// Event is
 type Event struct {
 	Event   *nostr.Event `json:"event"`
 	Profile Profile      `json:"profile"`
 }
 
+// Profile is
 type Profile struct {
 	Website     string `json:"website"`
 	Nip05       string `json:"nip05"`
@@ -119,15 +125,16 @@ func loadConfig(profile string) (*Config, error) {
 	return &cfg, nil
 }
 
+// GetFollows is
 func (cfg *Config) GetFollows(profile string) (map[string]Profile, error) {
 	var mu sync.Mutex
 	var pub string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return nil, err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		if pub, err = nostr.GetPublicKey(s.(string)); err != nil {
 			return nil, err
 		}
+	} else {
+		return nil, err
 	}
 
 	// get followers
@@ -137,10 +144,10 @@ func (cfg *Config) GetFollows(profile string) (map[string]Profile, error) {
 		mu.Unlock()
 		m := map[string]struct{}{}
 
-		cfg.Do(Relay{Read: true}, func(relay *nostr.Relay) {
-			evs, err := relay.QuerySync(context.Background(), nostr.Filter{Kinds: []int{nostr.KindContactList}, Authors: []string{pub}, Limit: 1})
+		cfg.Do(Relay{Read: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+			evs, err := relay.QuerySync(ctx, nostr.Filter{Kinds: []int{nostr.KindContactList}, Authors: []string{pub}, Limit: 1})
 			if err != nil {
-				return
+				return true
 			}
 			for _, ev := range evs {
 				var rm map[string]Relay
@@ -162,6 +169,7 @@ func (cfg *Config) GetFollows(profile string) (map[string]Profile, error) {
 					}
 				}
 			}
+			return true
 		})
 		if cfg.verbose {
 			fmt.Printf("found %d followers\n", len(m))
@@ -180,13 +188,13 @@ func (cfg *Config) GetFollows(profile string) (map[string]Profile, error) {
 				}
 
 				// get follower's descriptions
-				cfg.Do(Relay{Read: true}, func(relay *nostr.Relay) {
-					evs, err := relay.QuerySync(context.Background(), nostr.Filter{
-						Kinds:   []int{nostr.KindSetMetadata},
+				cfg.Do(Relay{Read: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+					evs, err := relay.QuerySync(ctx, nostr.Filter{
+						Kinds:   []int{nostr.KindProfileMetadata},
 						Authors: follows[i:end], // Use the updated end index
 					})
 					if err != nil {
-						return
+						return true
 					}
 					for _, ev := range evs {
 						var profile Profile
@@ -197,6 +205,7 @@ func (cfg *Config) GetFollows(profile string) (map[string]Profile, error) {
 							mu.Unlock()
 						}
 					}
+					return true
 				})
 			}
 		}
@@ -209,7 +218,8 @@ func (cfg *Config) GetFollows(profile string) (map[string]Profile, error) {
 	return cfg.Follows, nil
 }
 
-func (cfg *Config) FindRelay(r Relay) *nostr.Relay {
+// FindRelay is
+func (cfg *Config) FindRelay(ctx context.Context, r Relay) *nostr.Relay {
 	for k, v := range cfg.Relays {
 		if r.Write && !v.Write {
 			continue
@@ -223,7 +233,6 @@ func (cfg *Config) FindRelay(r Relay) *nostr.Relay {
 		if cfg.verbose {
 			fmt.Printf("trying relay: %s\n", k)
 		}
-		ctx := context.WithValue(context.Background(), "url", k)
 		relay, err := nostr.RelayConnect(ctx, k)
 		if err != nil {
 			if cfg.verbose {
@@ -236,8 +245,10 @@ func (cfg *Config) FindRelay(r Relay) *nostr.Relay {
 	return nil
 }
 
-func (cfg *Config) Do(r Relay, f func(*nostr.Relay)) {
+// Do is
+func (cfg *Config) Do(r Relay, f func(context.Context, *nostr.Relay) bool) {
 	var wg sync.WaitGroup
+	ctx := context.Background()
 	for k, v := range cfg.Relays {
 		if r.Write && !v.Write {
 			continue
@@ -251,7 +262,6 @@ func (cfg *Config) Do(r Relay, f func(*nostr.Relay)) {
 		wg.Add(1)
 		go func(wg *sync.WaitGroup, k string, v Relay) {
 			defer wg.Done()
-			ctx := context.WithValue(context.Background(), "url", k)
 			relay, err := nostr.RelayConnect(ctx, k)
 			if err != nil {
 				if cfg.verbose {
@@ -259,7 +269,9 @@ func (cfg *Config) Do(r Relay, f func(*nostr.Relay)) {
 				}
 				return
 			}
-			f(relay)
+			if !f(ctx, relay) {
+				ctx.Done()
+			}
 			relay.Close()
 		}(&wg, k, v)
 	}
@@ -289,16 +301,17 @@ func (cfg *Config) save(profile string) error {
 	return ioutil.WriteFile(fp, b, 0644)
 }
 
+// Decode is
 func (cfg *Config) Decode(ev *nostr.Event) error {
 	var sk string
 	var pub string
-	if _, s, err := nip19.Decode(cfg.PrivateKey); err != nil {
-		return err
-	} else {
+	if _, s, err := nip19.Decode(cfg.PrivateKey); err == nil {
 		sk = s.(string)
 		if pub, err = nostr.GetPublicKey(s.(string)); err != nil {
 			return err
 		}
+	} else {
+		return err
 	}
 	tag := ev.Tags.GetFirst([]string{"p"})
 	if tag == nil {
@@ -324,6 +337,7 @@ func (cfg *Config) Decode(ev *nostr.Event) error {
 	return nil
 }
 
+// PrintEvents is
 func (cfg *Config) PrintEvents(evs []*nostr.Event, followsMap map[string]Profile, j, extra bool) {
 	if j {
 		if extra {
@@ -365,12 +379,21 @@ func (cfg *Config) PrintEvents(evs []*nostr.Event, followsMap map[string]Profile
 	}
 }
 
+// Events is
 func (cfg *Config) Events(filter nostr.Filter) []*nostr.Event {
+	var mu sync.Mutex
+	found := false
 	var m sync.Map
-	cfg.Do(Relay{Read: true}, func(relay *nostr.Relay) {
-		evs, err := relay.QuerySync(context.Background(), filter)
+	cfg.Do(Relay{Read: true}, func(ctx context.Context, relay *nostr.Relay) bool {
+		mu.Lock()
+		if found {
+			mu.Unlock()
+			return false
+		}
+		mu.Unlock()
+		evs, err := relay.QuerySync(ctx, filter)
 		if err != nil {
-			return
+			return true
 		}
 		for _, ev := range evs {
 			if _, ok := m.Load(ev.ID); !ok {
@@ -380,8 +403,16 @@ func (cfg *Config) Events(filter nostr.Filter) []*nostr.Event {
 					}
 				}
 				m.LoadOrStore(ev.ID, ev)
+				if len(filter.IDs) == 1 {
+					mu.Lock()
+					found = true
+					ctx.Done()
+					mu.Unlock()
+					break
+				}
 			}
 		}
+		return true
 	})
 
 	keys := []string{}
@@ -457,6 +488,7 @@ func main() {
 					&cli.BoolFlag{Name: "stdin"},
 					&cli.StringFlag{Name: "sensitive"},
 					&cli.StringSliceFlag{Name: "emoji"},
+					&cli.StringFlag{Name: "geohash"},
 				},
 				Usage:     "post new note",
 				UsageText: "algia post [note text]",
@@ -473,6 +505,7 @@ func main() {
 					&cli.BoolFlag{Name: "quote"},
 					&cli.StringFlag{Name: "sensitive"},
 					&cli.StringSliceFlag{Name: "emoji"},
+					&cli.StringFlag{Name: "geohash"},
 				},
 				Usage:     "reply to the note",
 				UsageText: "algia reply --id [id] [note text]",
@@ -605,6 +638,17 @@ func main() {
 				UsageText: "algia puru",
 				HelpName:  "puru",
 				Action:    doPuru,
+			},
+			{
+				Name: "zap",
+				Flags: []cli.Flag{
+					&cli.Uint64Flag{Name: "amount", Usage: "amount for zap", Value: 1},
+					&cli.StringFlag{Name: "comment", Usage: "comment for zap", Value: ""},
+				},
+				Usage:     "zap [note|npub|nevent]",
+				UsageText: "algia zap [note|npub|nevent]",
+				HelpName:  "zap",
+				Action:    doZap,
 			},
 			{
 				Name:      "version",
